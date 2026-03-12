@@ -189,27 +189,31 @@ def get_session_score(active):
 # DATA FETCHING
 # ============================================================
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def fetch_data(symbol, period="5d", interval="5m"):
+    import time
     yf_sym = get_yf_symbol(symbol)
-    # Try multiple periods as fallback in case server has data gaps
     periods_to_try = [period]
     if period == "5d":  periods_to_try = ["5d", "7d", "10d"]
     if period == "30d": periods_to_try = ["30d", "60d"]
     if period == "60d": periods_to_try = ["60d", "90d"]
 
-    for p in periods_to_try:
+    for attempt, p in enumerate(periods_to_try):
         try:
+            if attempt > 0:
+                time.sleep(2)  # Small delay on retry
             df = yf.download(yf_sym, period=p, interval=interval,
                              auto_adjust=True, progress=False, timeout=20)
             if df is None or df.empty: continue
-            # Flatten MultiIndex columns if present
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = [c[0] for c in df.columns]
             df = df[["Open","High","Low","Close","Volume"]].dropna()
             if len(df) >= 30:
                 return df
-        except Exception:
+        except Exception as e:
+            err = str(e).lower()
+            if "rate" in err or "too many" in err:
+                time.sleep(3)  # Wait longer on rate limit
             continue
     return None
 
@@ -1341,7 +1345,7 @@ def render_chart_tab(r):
         side="right"
     )
 
-    st.plotly_chart(fig, use_container_width=True, config={
+    st.plotly_chart(fig, width="stretch", config={
         "displayModeBar": True,
         "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
         "displaylogo": False,
@@ -1638,6 +1642,9 @@ if scan_btn:
                 "tp1_price":0,"tp2_price":0,"buy_s":0,"sell_s":0,"macd":0,"macd_hist":0,
                 "stoch_k":50,"stoch_d":50,"bb_pct":50,"atr":0,"order_blocks":[],"fvg":[],
                 "h1_trend":"N/A","h4_bias":"N/A","m5_momentum":"N/A","cot":_cot_empty()})
+        # Small delay every 5 pairs to avoid yfinance rate limiting
+        if (i + 1) % 5 == 0:
+            import time; time.sleep(1)
     bar.empty(); txt.empty(); cot_status.empty()
     st.session_state["scan_results"]=results
     st.session_state["debug_log"]=debug_log
