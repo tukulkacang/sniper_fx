@@ -998,6 +998,8 @@ def _render_cot_tab(cot, symbol):
 # AI ANALYSIS ENGINE — Claude API
 # ============================================================
 
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import os
 
 def get_api_key():
@@ -1144,9 +1146,6 @@ def call_groq_api(prompt, api_key):
 
 def render_chart_tab(r):
     """Render interactive candlestick chart with SMC overlays."""
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-
     symbol = r["symbol"]
 
     # Timeframe selector
