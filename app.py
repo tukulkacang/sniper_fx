@@ -1117,7 +1117,7 @@ def call_groq_api(prompt, api_key):
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You are an elite forex trader specializing in Smart Money Concepts (SMC), institutional order flow, and precision scalping. Give sharp, direct, professional analysis. No generic advice."
+                        "content": "You are an elite forex trader specializing in Smart Money Concepts (SMC), institutional order flow, and precision scalping. Give sharp, direct, professional analysis in Bahasa Indonesia. No generic advice."
                     },
                     {"role": "user", "content": prompt}
                 ]
@@ -1136,6 +1136,226 @@ def call_groq_api(prompt, api_key):
             return "", f"❌ API error {resp.status_code}: {resp.text[:200]}"
     except Exception as e:
         return "", f"❌ Connection error: {str(e)[:100]}"
+
+
+def render_chart_tab(r):
+    """Render interactive candlestick chart with SMC overlays."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    symbol = r["symbol"]
+
+    # Timeframe selector
+    col_tf1, col_tf2 = st.columns([2, 3])
+    with col_tf1:
+        tf = st.selectbox("Timeframe", ["1m","5m","15m","30m","1h","4h","1d"],
+                          index=1, key=f"tf_{symbol}")
+    with col_tf2:
+        overlays = st.multiselect("Overlays",
+            ["EMA 8/21", "EMA 20/50", "Bollinger Bands", "Order Blocks", "FVG Zones", "Volume"],
+            default=["EMA 8/21", "Order Blocks", "FVG Zones"],
+            key=f"ov_{symbol}")
+
+    # Map TF to yfinance period
+    tf_period = {
+        "1m":"1d","5m":"5d","15m":"10d","30m":"30d",
+        "1h":"60d","4h":"60d","1d":"365d"
+    }.get(tf, "5d")
+
+    with st.spinner(f"Loading {symbol} {tf} chart..."):
+        df = fetch_data(symbol, tf_period, tf)
+
+    if df is None or len(df) < 10:
+        st.error(f"No chart data available for {symbol} {tf}")
+        return
+
+    # Limit to last 150 candles for performance
+    df = df.tail(150).copy()
+    df = df.reset_index()
+    dates = df.iloc[:, 0]  # Date column
+    opens  = df["Open"].values
+    highs  = df["High"].values
+    lows   = df["Low"].values
+    closes = df["Close"].values
+    volumes = df["Volume"].values if "Volume" in df.columns else None
+
+    has_vol = volumes is not None and volumes.sum() > 0
+
+    # Create subplots
+    row_heights = [0.75, 0.25] if has_vol and "Volume" in overlays else [1.0]
+    rows = 2 if has_vol and "Volume" in overlays else 1
+
+    fig = make_subplots(
+        rows=rows, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=row_heights
+    )
+
+    # ── CANDLESTICK ──
+    fig.add_trace(go.Candlestick(
+        x=dates,
+        open=opens, high=highs, low=lows, close=closes,
+        name=symbol,
+        increasing_line_color="#00ff88",
+        decreasing_line_color="#ff3355",
+        increasing_fillcolor="#00ff8844",
+        decreasing_fillcolor="#ff335544",
+        line_width=1,
+    ), row=1, col=1)
+
+    # ── EMA 8/21 ──
+    if "EMA 8/21" in overlays and len(closes) >= 21:
+        ema8_s  = calc_ema_series(closes, 8)
+        ema21_s = calc_ema_series(closes, 21)
+        fig.add_trace(go.Scatter(x=dates, y=ema8_s, name="EMA 8",
+            line=dict(color="#00bfff", width=1.2, dash="solid"), opacity=0.8), row=1, col=1)
+        fig.add_trace(go.Scatter(x=dates, y=ema21_s, name="EMA 21",
+            line=dict(color="#ffd700", width=1.2, dash="solid"), opacity=0.8), row=1, col=1)
+
+    # ── EMA 20/50 ──
+    if "EMA 20/50" in overlays and len(closes) >= 50:
+        ema20_s = calc_ema_series(closes, 20)
+        ema50_s = calc_ema_series(closes, 50)
+        fig.add_trace(go.Scatter(x=dates, y=ema20_s, name="EMA 20",
+            line=dict(color="#ff8c00", width=1.5, dash="dot"), opacity=0.8), row=1, col=1)
+        fig.add_trace(go.Scatter(x=dates, y=ema50_s, name="EMA 50",
+            line=dict(color="#cc44ff", width=1.5, dash="dot"), opacity=0.8), row=1, col=1)
+
+    # ── BOLLINGER BANDS ──
+    if "Bollinger Bands" in overlays and len(closes) >= 20:
+        bb_mid_s = []
+        bb_upp_s = []
+        bb_low_s = []
+        for i in range(len(closes)):
+            if i < 19:
+                bb_mid_s.append(None); bb_upp_s.append(None); bb_low_s.append(None)
+            else:
+                m, u, l = calc_bb(closes[:i+1])
+                bb_mid_s.append(m); bb_upp_s.append(u); bb_low_s.append(l)
+
+        fig.add_trace(go.Scatter(x=dates, y=bb_upp_s, name="BB Upper",
+            line=dict(color="#5a7a9a", width=1, dash="dash"), opacity=0.6), row=1, col=1)
+        fig.add_trace(go.Scatter(x=dates, y=bb_mid_s, name="BB Mid",
+            line=dict(color="#5a7a9a", width=1, dash="dot"), opacity=0.5), row=1, col=1)
+        fig.add_trace(go.Scatter(x=dates, y=bb_low_s, name="BB Lower",
+            line=dict(color="#5a7a9a", width=1, dash="dash"), opacity=0.6,
+            fill="tonexty" if False else None), row=1, col=1)
+
+    # ── ORDER BLOCKS ──
+    if "Order Blocks" in overlays and r.get("order_blocks"):
+        price_range = highs.max() - lows.min()
+        for ob in r["order_blocks"][:4]:
+            color = "rgba(0,255,136,0.15)" if ob["type"] == "BULL" else "rgba(255,51,85,0.15)"
+            border = "#00ff88" if ob["type"] == "BULL" else "#ff3355"
+            label = f"{'🟩' if ob['type']=='BULL' else '🟥'} {ob['type']} OB (str:{ob['str']})"
+            # Shade the OB zone across full chart
+            fig.add_hrect(
+                y0=ob["low"], y1=ob["high"],
+                fillcolor=color,
+                line=dict(color=border, width=1, dash="dot"),
+                annotation_text=label,
+                annotation_position="right",
+                annotation=dict(font=dict(color=border, size=10, family="Share Tech Mono")),
+                row=1, col=1
+            )
+
+    # ── FVG ZONES ──
+    if "FVG Zones" in overlays and r.get("fvg"):
+        for fvg in r["fvg"][:3]:
+            color = "rgba(0,191,255,0.12)" if fvg["type"] == "BULL" else "rgba(255,140,0,0.12)"
+            border = "#00bfff" if fvg["type"] == "BULL" else "#ff8c00"
+            label = f"FVG {fvg['type']}"
+            fig.add_hrect(
+                y0=fvg["bot"], y1=fvg["top"],
+                fillcolor=color,
+                line=dict(color=border, width=1, dash="dash"),
+                annotation_text=label,
+                annotation_position="left",
+                annotation=dict(font=dict(color=border, size=10, family="Share Tech Mono")),
+                row=1, col=1
+            )
+
+    # ── CURRENT PRICE LINE ──
+    cp = float(closes[-1])
+    cp_color = "#00ff88" if r["direction"] == "BUY" else "#ff3355" if r["direction"] == "SELL" else "#ffd700"
+    fig.add_hline(y=cp, line=dict(color=cp_color, width=1.5, dash="solid"),
+                  annotation_text=f"  {cp:.5f}",
+                  annotation=dict(font=dict(color=cp_color, size=11, family="Share Tech Mono")),
+                  row=1, col=1)
+
+    # ── SL / TP LINES ──
+    if r["direction"] != "NEUTRAL" and r.get("sl_price", 0) > 0:
+        fig.add_hline(y=r["sl_price"], line=dict(color="#ff3355", width=1, dash="dash"),
+                      annotation_text=f"  SL {r['sl_price']:.5f}",
+                      annotation=dict(font=dict(color="#ff3355", size=10, family="Share Tech Mono")),
+                      row=1, col=1)
+        fig.add_hline(y=r["tp1_price"], line=dict(color="#00ff88", width=1, dash="dash"),
+                      annotation_text=f"  TP1 {r['tp1_price']:.5f}",
+                      annotation=dict(font=dict(color="#00ff88", size=10, family="Share Tech Mono")),
+                      row=1, col=1)
+        fig.add_hline(y=r["tp2_price"], line=dict(color="#00cc66", width=1, dash="dot"),
+                      annotation_text=f"  TP2 {r['tp2_price']:.5f}",
+                      annotation=dict(font=dict(color="#00cc66", size=10, family="Share Tech Mono")),
+                      row=1, col=1)
+
+    # ── VOLUME ──
+    if has_vol and "Volume" in overlays:
+        vol_colors = ["#00ff8866" if c >= o else "#ff335566"
+                      for c, o in zip(closes, opens)]
+        fig.add_trace(go.Bar(
+            x=dates, y=volumes, name="Volume",
+            marker_color=vol_colors, showlegend=False
+        ), row=2, col=1)
+
+    # ── LAYOUT ──
+    fig.update_layout(
+        paper_bgcolor="#050a0e",
+        plot_bgcolor="#0a1520",
+        font=dict(color="#e0f0ff", family="Share Tech Mono", size=11),
+        xaxis_rangeslider_visible=False,
+        legend=dict(
+            bgcolor="#0d1e2e", bordercolor="#1a3a5c", borderwidth=1,
+            font=dict(size=10, color="#7a9abf")
+        ),
+        margin=dict(l=10, r=80, t=40, b=10),
+        height=520,
+        title=dict(
+            text=f"  {symbol} · {tf.upper()} · {r['direction']} · Score:{r['score']}",
+            font=dict(color=cp_color, size=13, family="Share Tech Mono"),
+            x=0
+        ),
+        hovermode="x unified",
+        hoverlabel=dict(
+            bgcolor="#0d1e2e", bordercolor="#1a3a5c",
+            font=dict(color="#e0f0ff", size=11, family="Share Tech Mono")
+        )
+    )
+    fig.update_xaxes(
+        gridcolor="#0d1e2e", zeroline=False,
+        showspikes=True, spikecolor="#1a3a5c", spikethickness=1
+    )
+    fig.update_yaxes(
+        gridcolor="#0d1e2e", zeroline=False,
+        showspikes=True, spikecolor="#1a3a5c", spikethickness=1,
+        side="right"
+    )
+
+    st.plotly_chart(fig, use_container_width=True, config={
+        "displayModeBar": True,
+        "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
+        "displaylogo": False,
+        "scrollZoom": True
+    })
+
+    # Mini stats below chart
+    atr_pips = round(r.get("atr", 0) / get_pip(symbol))
+    col1, col2, col3, col4, col5 = st.columns(5)
+    mcard(col1, "CANDLES", len(df), "#5a7a9a")
+    mcard(col2, "CURRENT", f"{cp:.5f}", cp_color)
+    mcard(col3, "ATR (pips)", atr_pips, "#ffd700")
+    mcard(col4, "HIGH", f"{highs.max():.5f}", "#00ff88")
+    mcard(col5, "LOW",  f"{lows.min():.5f}", "#ff3355")
 
 
 def render_ai_tab(r):
@@ -1335,15 +1555,17 @@ if qp and qp != "—":
         <b style='color:#ffd700'>RR 1:{res["rr_ratio"]:.1f}</b>
         </div>""", unsafe_allow_html=True)
 
-    t1,t2,t3,t4,t5=st.tabs(["📡 SIGNALS","⚠️ WARNINGS","🏗️ SMC ZONES","📋 COT REPORT","🤖 AI ANALYSIS"])
+    t1,t2,t3,t4,t5,t6=st.tabs(["📈 CHART","📡 SIGNALS","⚠️ WARNINGS","🏗️ SMC ZONES","📋 COT REPORT","🤖 AI ANALYSIS"])
     with t1:
+        render_chart_tab(res)
+    with t2:
         for s in res["signals"]:
             st.markdown(f"<span class='conf-tag conf-pos'>{s}</span>",unsafe_allow_html=True)
-    with t2:
+    with t3:
         for w in res["warnings"]:
             st.markdown(f"<span class='conf-tag conf-neg'>{w}</span>",unsafe_allow_html=True)
         if not res["warnings"]: st.success("No warnings ✓")
-    with t3:
+    with t4:
         if res["order_blocks"]:
             st.markdown("**Order Blocks**")
             for ob in res["order_blocks"]:
@@ -1360,9 +1582,9 @@ if qp and qp != "—":
                             f"<span style='color:#7a9abf;font-family:Share Tech Mono;font-size:11px'>"
                             f"{f['bot']:.5f}–{f['top']:.5f}</span></div>",
                             unsafe_allow_html=True)
-    with t4:
-        _render_cot_tab(res["cot"], res["symbol"])
     with t5:
+        _render_cot_tab(res["cot"], res["symbol"])
+    with t6:
         render_ai_tab(res)
     st.divider()
 
