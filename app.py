@@ -1145,6 +1145,7 @@ if qp and qp != "—":
 
 if scan_btn:
     st.session_state["scan_results"]=[]
+    st.session_state["debug_log"]=[]
 
     # Load COT data once for all pairs
     cot_status = st.empty()
@@ -1161,12 +1162,25 @@ if scan_btn:
     bar=st.progress(0,"Initializing...")
     txt=st.empty()
     results=[]
+    debug_log=[]
+    data_ok=0; data_fail=0
     for i,sym in enumerate(pairs):
         bar.progress((i+1)/len(pairs),f"Scanning {sym}... ({i+1}/{len(pairs)})")
         txt.markdown(f"<div style='font-family:Share Tech Mono;font-size:11px;color:#5a7a9a'>"
                      f"◈ Analyzing {ALL_PAIRS.get(sym,sym)}</div>",unsafe_allow_html=True)
-        try: results.append(analyze(sym, cot_df))
+        try:
+            r = analyze(sym, cot_df)
+            results.append(r)
+            if r["price"] > 0:
+                data_ok += 1
+                debug_log.append(f"✅ {sym}: price={r['price']:.5f} score={r['score']} rating={r['rating']}")
+            else:
+                data_fail += 1
+                sig_preview = r["signals"][0] if r["signals"] else "no signal"
+                debug_log.append(f"❌ {sym}: no price data — {sig_preview}")
         except Exception as e:
+            data_fail += 1
+            debug_log.append(f"💥 {sym}: exception — {str(e)[:80]}")
             results.append({"symbol":sym,"name":ALL_PAIRS.get(sym,sym),"score":0,
                 "direction":"NEUTRAL","rating":"🚫 AVOID","confirmations":0,
                 "signals":[f"Error: {e}"],"warnings":[],"price":0,"rsi":50,"adx":20,
@@ -1177,6 +1191,9 @@ if scan_btn:
                 "h1_trend":"N/A","h4_bias":"N/A","m5_momentum":"N/A","cot":_cot_empty()})
     bar.empty(); txt.empty(); cot_status.empty()
     st.session_state["scan_results"]=results
+    st.session_state["debug_log"]=debug_log
+    st.session_state["data_ok"]=data_ok
+    st.session_state["data_fail"]=data_fail
 
 # ============================================================
 # DISPLAY RESULTS
@@ -1184,6 +1201,30 @@ if scan_btn:
 
 if st.session_state.get("scan_results"):
     results=st.session_state["scan_results"]
+
+    # ── DEBUG PANEL ──
+    data_ok   = st.session_state.get("data_ok", 0)
+    data_fail = st.session_state.get("data_fail", 0)
+    debug_log = st.session_state.get("debug_log", [])
+
+    if data_fail > 0:
+        with st.expander(f"⚠️ DEBUG — {data_ok} pairs OK / {data_fail} pairs FAILED (click to expand)", expanded=data_ok==0):
+            st.markdown(f"""<div style='background:#050a0e;border:1px solid #1a3a5c;border-radius:4px;
+            padding:12px;font-family:Share Tech Mono;font-size:11px;line-height:1.8'>""",
+            unsafe_allow_html=True)
+            for line in debug_log:
+                color = "#00ff88" if line.startswith("✅") else "#ff3355" if line.startswith(("❌","💥")) else "#ffd700"
+                st.markdown(f"<div style='color:{color}'>{line}</div>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+            if data_ok == 0:
+                st.markdown("""<div class='alert-box'>
+                <b style='color:#ff3355'>🚨 All data fetches failed</b><br>
+                yfinance cannot reach Yahoo Finance from this server.<br>
+                <b>Solutions:</b><br>
+                ◈ Try running locally: <code>streamlit run app.py</code><br>
+                ◈ Or check if HF Spaces has network restrictions<br>
+                ◈ yfinance sometimes needs a few minutes — try scanning again
+                </div>""", unsafe_allow_html=True)
     rorder={"🎯 SNIPER":0,"⚡ STRONG":1,"✅ SETUP":2,"👀 WATCH":3,"⏳ WAIT":4,"🚫 AVOID":5}
 
     filtered=[r for r in results
