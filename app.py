@@ -51,6 +51,7 @@ COT_MARKET_MAP = {
     "NZDCHF": "NEW ZEALAND DOLLAR",
     "CHFJPY": "SWISS FRANC",
     "CADCHF": "CANADIAN DOLLAR",
+    "XAUUSD": "GOLD",   # Gold futures COT
 }
 
 # Whether the pair moves WITH or AGAINST the base currency futures
@@ -82,11 +83,25 @@ MINOR_PAIRS = {
     "CADJPY": "CAD/JPY", "CHFJPY": "CHF/JPY", "NZDJPY": "NZD/JPY",
     "NZDCAD": "NZD/CAD", "NZDCHF": "NZD/CHF", "CADCHF": "CAD/CHF"
 }
-ALL_PAIRS = {**MAJOR_PAIRS, **MINOR_PAIRS}
+COMMODITY_PAIRS = {
+    "XAUUSD": "Gold/USD",   # Gold
+}
+ALL_PAIRS = {**MAJOR_PAIRS, **MINOR_PAIRS, **COMMODITY_PAIRS}
 JPY_PAIRS = [p for p in ALL_PAIRS if "JPY" in p]
 
+# yfinance symbol mapping (some pairs use different symbols)
+YF_SYMBOL_MAP = {
+    "XAUUSD": "GC=F",   # Gold futures
+}
+
+def get_yf_symbol(symbol):
+    """Get correct yfinance symbol for a pair."""
+    return YF_SYMBOL_MAP.get(symbol, symbol + "=X")
+
 def get_pip(symbol):
-    return 0.01 if symbol in JPY_PAIRS else 0.0001
+    if symbol in JPY_PAIRS: return 0.01
+    if symbol == "XAUUSD":  return 0.1   # Gold: 1 pip = $0.10
+    return 0.0001
 
 # ============================================================
 # CSS — Military Dark Theme
@@ -176,13 +191,27 @@ def get_session_score(active):
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_data(symbol, period="5d", interval="5m"):
-    try:
-        df = yf.download(symbol+"=X", period=period, interval=interval,
-                         auto_adjust=True, progress=False)
-        if df.empty or len(df) < 30: return None
-        df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-        return df[["Open","High","Low","Close","Volume"]].dropna()
-    except: return None
+    yf_sym = get_yf_symbol(symbol)
+    # Try multiple periods as fallback in case server has data gaps
+    periods_to_try = [period]
+    if period == "5d":  periods_to_try = ["5d", "7d", "10d"]
+    if period == "30d": periods_to_try = ["30d", "60d"]
+    if period == "60d": periods_to_try = ["60d", "90d"]
+
+    for p in periods_to_try:
+        try:
+            df = yf.download(yf_sym, period=p, interval=interval,
+                             auto_adjust=True, progress=False, timeout=20)
+            if df is None or df.empty: continue
+            # Flatten MultiIndex columns if present
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [c[0] for c in df.columns]
+            df = df[["Open","High","Low","Close","Volume"]].dropna()
+            if len(df) >= 30:
+                return df
+        except Exception:
+            continue
+    return None
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_h1(symbol): return fetch_data(symbol, "30d", "1h")
@@ -995,7 +1024,7 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**🌐 PAIRS**")
-    pg=st.selectbox("Pair Group",["All (28)","Major (7)","Minor/Cross (21)","Custom"])
+    pg=st.selectbox("Pair Group",["All (29)","Major (7)","Minor/Cross (21)","Commodities (XAUUSD)","Custom"])
     cp_list=[]
     if pg=="Custom":
         cp_list=st.multiselect("Select",list(ALL_PAIRS.keys()),default=["EURUSD","GBPUSD","USDJPY"])
@@ -1004,8 +1033,8 @@ with st.sidebar:
     st.markdown("**🎛️ FILTERS**")
     min_sc=st.slider("Min Score",0,100,50)
     min_cf=st.slider("Min Confirmations",0,10,3)
-    show_r=st.multiselect("Ratings",["🎯 SNIPER","⚡ STRONG","✅ SETUP","👀 WATCH","⏳ WAIT"],
-                           default=["🎯 SNIPER","⚡ STRONG","✅ SETUP"])
+    show_r=st.multiselect("Ratings",["🎯 SNIPER","⚡ STRONG","✅ SETUP","👀 WATCH","⏳ WAIT","🚫 AVOID"],
+                           default=["🎯 SNIPER","⚡ STRONG","✅ SETUP","👀 WATCH","⏳ WAIT","🚫 AVOID"])
     dir_f=st.selectbox("Direction",["All","BUY only","SELL only"])
 
     st.divider()
@@ -1018,10 +1047,11 @@ with st.sidebar:
 # PAIRS TO SCAN
 # ============================================================
 
-if pg=="Major (7)":       pairs=list(MAJOR_PAIRS.keys())
-elif pg=="Minor/Cross (21)": pairs=list(MINOR_PAIRS.keys())
-elif pg=="Custom":        pairs=cp_list if cp_list else list(MAJOR_PAIRS.keys())
-else:                     pairs=list(ALL_PAIRS.keys())
+if pg=="Major (7)":            pairs=list(MAJOR_PAIRS.keys())
+elif pg=="Minor/Cross (21)":   pairs=list(MINOR_PAIRS.keys())
+elif pg=="Commodities (XAUUSD)": pairs=list(COMMODITY_PAIRS.keys())
+elif pg=="Custom":             pairs=cp_list if cp_list else list(MAJOR_PAIRS.keys())
+else:                          pairs=list(ALL_PAIRS.keys())
 
 # ============================================================
 # SCAN + QUICK ANALYZE BUTTONS
@@ -1181,7 +1211,7 @@ if st.session_state.get("scan_results"):
     mcard(c5,"🟢 BUY",buys,"#00ff88")
     mcard(c6,"🔴 SELL",sells,"#ff3355")
 
-    st.markdown(f"<br>### 🎯 {len(filtered)} PAIRS MATCH FILTERS",unsafe_allow_html=True)
+    st.markdown(f"### 🎯 {len(filtered)} PAIRS MATCH FILTERS")
 
     if not filtered:
         st.markdown("<div class='alert-box'>No pairs match current filters — try lowering thresholds.</div>",
