@@ -831,16 +831,18 @@ def analyze(symbol, cot_df=None):
     if bias=="BEARISH" and rsi<28: score-=10;warns.append("⚠️ RSI oversold vs bearish bias")
     if adx<18 and bos: score-=8;warns.append("⚠️ BOS but ADX very weak — false signal risk")
 
+    # ── DETERMINE DIRECTION FIRST ──
+    if buy_s>sell_s: direction="BUY"
+    elif sell_s>buy_s: direction="SELL"
+    else: direction="NEUTRAL"
+
     # ── COT CONTRIBUTION (applied after direction known) ──
     cot_score_d, cot_conf_d, cot_sigs = cot_score_contribution(cot, direction)
     score += cot_score_d
     conf  += cot_conf_d
     sigs  += cot_sigs
 
-    # ── NORMALIZE ──
-    if buy_s>sell_s: direction="BUY"
-    elif sell_s>buy_s: direction="SELL"
-    else: direction="NEUTRAL"
+    # ── NORMALIZE & COUNTER-TREND PENALTY ──
 
     if direction=="BUY" and bias=="BEARISH":   score=int(score*0.6);warns.append("⚠️ BUY vs H4 BEARISH — counter-trend!")
     elif direction=="SELL" and bias=="BULLISH": score=int(score*0.6);warns.append("⚠️ SELL vs H4 BULLISH — counter-trend!")
