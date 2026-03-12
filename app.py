@@ -991,6 +991,229 @@ def _render_cot_tab(cot, symbol):
 
 
 # ============================================================
+# AI ANALYSIS ENGINE — Claude API
+# ============================================================
+
+import os
+
+def get_api_key():
+    """Get Groq API key from environment variable."""
+    return os.environ.get("GROQ_API_KEY", "")
+
+def build_ai_prompt(r):
+    """Build a rich prompt from pair analysis data for Claude."""
+    cot = r.get("cot", _cot_empty())
+    cot_info = f"""
+COT Report (CFTC):
+- Institutional Net Position: {cot.get('dealer_net', 'N/A'):+,} ({cot.get('signal','N/A')})
+- COT Index (0-100): {cot.get('cot_index', 50):.0f} — {'EXTREME' if cot.get('extreme') else 'NORMAL'} positioning
+- Asset Manager Net: {cot.get('am_net', 'N/A'):+,}
+- Retail (Leveraged Funds): {cot.get('lev_net', 'N/A'):+,} ← contra indicator
+- Momentum: {cot.get('cot_momentum', 'N/A')}
+- Report Date: {cot.get('report_date', 'N/A')}""" if cot.get("available") else "\nCOT Report: Not available"
+
+    obs_info = ""
+    if r.get("order_blocks"):
+        obs_info = "\nOrder Blocks:\n" + "\n".join(
+            f"  - {o['type']} OB: {o['low']:.5f}–{o['high']:.5f} (strength:{o['str']})"
+            for o in r["order_blocks"][:3])
+
+    fvg_info = ""
+    if r.get("fvg"):
+        fvg_info = "\nFair Value Gaps:\n" + "\n".join(
+            f"  - {f['type']} FVG: {f['bot']:.5f}–{f['top']:.5f}"
+            for f in r["fvg"][:3])
+
+    signals_str = "\n".join(f"  ◈ {s}" for s in r.get("signals", []))
+    warnings_str = "\n".join(f"  ⚠ {w}" for w in r.get("warnings", []))
+
+    prompt = f"""You are an elite forex trader and analyst specializing in Smart Money Concepts (SMC), institutional order flow, and precision scalping. Analyze this pair and provide a sharp, professional assessment.
+
+=== PAIR: {r['symbol']} ({r['name']}) ===
+Current Price: {r['price']:.5f}
+Direction Signal: {r['direction']}
+Sniper Score: {r['score']}/100
+Rating: {r['rating']}
+Confirmations: {r['confirmations']}
+
+=== MULTI-TIMEFRAME BIAS ===
+H4 Market Structure: {r.get('bias','N/A')}
+H4 Break of Structure: {'YES' if r.get('bos') else 'NO'}
+Change of Character: {'YES' if r.get('choch') else 'NO'}
+H1 Trend: {r.get('h1_trend','N/A')}
+M5 Momentum: {r.get('m5_momentum','N/A')}
+Premium/Discount Zone: {r.get('premium_zone','N/A')} ({r.get('premium_pct',50):.0f}%)
+
+=== CLASSIC INDICATORS (M5) ===
+RSI (Wilder): {r.get('rsi', 50)}
+MACD Histogram: {r.get('macd_hist', 0):+.6f}
+ADX: {r.get('adx', 20)} ({'STRONG TREND' if r.get('adx',20)>25 else 'WEAK/RANGING'})
+Stochastic %K: {r.get('stoch_k', 50):.0f}
+Bollinger Band %: {r.get('bb_pct', 50):.0f}%
+ATR: {r.get('atr', 0):.5f}
+{cot_info}
+
+=== SMC ZONES ==={obs_info}{fvg_info}
+
+=== CONFIRMED SIGNALS ===
+{signals_str if signals_str else '  None'}
+
+=== WARNINGS ===
+{warnings_str if warnings_str else '  None'}
+
+=== ENTRY PLAN ===
+Direction: {r['direction']}
+Entry: {r['price']:.5f}
+Stop Loss: {r.get('sl_price', 0):.5f} ({r.get('sl_pips', 0)} pips)
+TP1: {r.get('tp1_price', 0):.5f} ({r.get('tp1_pips', 0)} pips)
+TP2: {r.get('tp2_price', 0):.5f} ({r.get('tp2_pips', 0)} pips)
+Risk:Reward: 1:{r.get('rr_ratio', 0):.1f}
+
+Please provide your analysis in this EXACT structure:
+
+## 🎯 SETUP NARRATIVE
+[2-3 sentences explaining WHY this setup exists — what story the chart is telling from institutional perspective]
+
+## 📊 MARKET CONTEXT
+[Current market conditions — is this trending, ranging, at key level? What are institutions doing based on COT + structure?]
+
+## ⚡ CONFLUENCE ANALYSIS
+[List the 3-5 strongest confluences that make this setup valid or invalid. Be specific about which ones matter most]
+
+## ⚠️ RISK ASSESSMENT
+[Honest assessment: what could invalidate this setup? What's the probability? Is the RR worth it?]
+
+## 📋 TRADING PLAN
+[Step-by-step execution plan:
+1. Entry condition (what needs to happen on M5 before entering)
+2. Position sizing recommendation (% risk)
+3. Stop loss logic
+4. TP1 management (partial close? move SL to BE?)
+5. TP2 target
+6. What would make you CANCEL this trade]
+
+## 🏆 FINAL VERDICT
+[One clear sentence: TAKE THIS TRADE / WAIT FOR BETTER SETUP / AVOID — with confidence level 1-10]
+
+Be direct, specific, and think like a professional trader managing real money. No generic advice."""
+
+    return prompt
+
+
+def call_groq_api(prompt, api_key):
+    """Groq API call — fast, free tier available. Returns (text, error)."""
+    try:
+        import requests as req
+        resp = req.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",  # Best free model on Groq
+                "max_tokens": 1200,
+                "temperature": 0.3,  # Low temp = more consistent trading analysis
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are an elite forex trader specializing in Smart Money Concepts (SMC), institutional order flow, and precision scalping. Give sharp, direct, professional analysis. No generic advice."
+                    },
+                    {"role": "user", "content": prompt}
+                ]
+            },
+            timeout=30
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            text = data["choices"][0]["message"]["content"] if data.get("choices") else ""
+            return text, ""
+        elif resp.status_code == 401:
+            return "", "❌ Invalid API key — check your GROQ_API_KEY"
+        elif resp.status_code == 429:
+            return "", "⏳ Rate limited — wait a moment and try again"
+        else:
+            return "", f"❌ API error {resp.status_code}: {resp.text[:200]}"
+    except Exception as e:
+        return "", f"❌ Connection error: {str(e)[:100]}"
+
+
+def render_ai_tab(r):
+    """Render the AI Analysis tab for a pair."""
+    api_key = get_api_key()
+
+    if not api_key:
+        st.markdown("""<div class='alert-box'>
+        <b style='color:#ffd700'>🤖 AI Analysis — Setup Required</b><br><br>
+        Add your Groq API key as an environment variable:<br><br>
+        <b style='color:#00ff88'>On Streamlit Cloud:</b><br>
+        Settings → Secrets → Add: <code>GROQ_API_KEY = "gsk_..."</code><br><br>
+        <b style='color:#00ff88'>On Hugging Face:</b><br>
+        Settings → Repository Secrets → Add: <code>GROQ_API_KEY</code><br><br>
+        <span style='color:#5a7a9a;font-size:11px'>
+        Get your FREE API key at <b>console.groq.com</b> — no credit card needed!<br>
+        Model: LLaMA 3.3 70B | Speed: ~500 tokens/sec | Cost: FREE
+        </span>
+        </div>""", unsafe_allow_html=True)
+        return
+
+    # Check if score is meaningful
+    if r["price"] == 0:
+        st.warning("No price data available for this pair — cannot generate AI analysis.")
+        return
+
+    col_ai1, col_ai2 = st.columns([3, 1])
+    with col_ai1:
+        st.markdown(f"""<div style='font-family:Share Tech Mono;font-size:11px;color:#5a7a9a;
+        line-height:1.8'>
+        🤖 AI Analyst: <b style='color:#00ff88'>LLaMA 3.3 70B (Groq)</b> &nbsp;|&nbsp;
+        Pair: <b style='color:#e0f0ff'>{r['symbol']}</b> &nbsp;|&nbsp;
+        Score: <b style='color:#ffd700'>{r['score']}/100</b> &nbsp;|&nbsp;
+        Direction: <b style='color:{"#00ff88" if r["direction"]=="BUY" else "#ff3355" if r["direction"]=="SELL" else "#5a7a9a"}'>{r["direction"]}</b>
+        </div>""", unsafe_allow_html=True)
+
+    with col_ai2:
+        analyze_btn = st.button("🤖 ANALYZE", key=f"ai_btn_{r['symbol']}", use_container_width=True)
+
+    # Cache key for this specific setup
+    cache_key = f"ai_{r['symbol']}_{r['score']}_{r['direction']}_{r['price']:.3f}"
+
+    if analyze_btn:
+        with st.spinner("🤖 AI analyst thinking..."):
+            prompt = build_ai_prompt(r)
+            ai_text, err = call_groq_api(prompt, api_key)
+            if ai_text:
+                st.session_state[cache_key] = ai_text
+            else:
+                st.session_state[cache_key] = f"ERROR:{err}"
+
+    # Display cached result
+    if cache_key in st.session_state:
+        result = st.session_state[cache_key]
+        if result.startswith("ERROR:"):
+            st.error(result[6:])
+        else:
+            # Render AI response with styled container
+            st.markdown(f"""<div style='background:#050a0e;border:1px solid #1a3a5c;
+            border-left:4px solid #ffd700;border-radius:0 6px 6px 0;
+            padding:20px;margin-top:12px;font-size:13px;line-height:1.8;color:#c0d8f0'>
+            {result.replace(chr(10), '<br>').replace('## ', '<br><b style="color:#ffd700;font-family:Share Tech Mono;font-size:12px;letter-spacing:1px">').replace('\n##', '</b><br>')}
+            </div>""", unsafe_allow_html=True)
+
+            # Clean markdown render
+            st.markdown("---")
+            st.markdown(result)
+    else:
+        st.markdown(f"""<div style='text-align:center;padding:30px;
+        font-family:Share Tech Mono;color:#1a3a5c;font-size:12px;letter-spacing:2px'>
+        ◈ PRESS "🤖 ANALYZE" TO GET AI ANALYSIS ◈<br><br>
+        <span style='font-size:10px'>
+        Analyzes: Setup Narrative · Market Context · Confluences · Risk · Trading Plan
+        </span>
+        </div>""", unsafe_allow_html=True)
+
+
+# ============================================================
 # HEADER
 # ============================================================
 
@@ -1112,7 +1335,7 @@ if qp and qp != "—":
         <b style='color:#ffd700'>RR 1:{res["rr_ratio"]:.1f}</b>
         </div>""", unsafe_allow_html=True)
 
-    t1,t2,t3,t4=st.tabs(["📡 SIGNALS","⚠️ WARNINGS","🏗️ SMC ZONES","📋 COT REPORT"])
+    t1,t2,t3,t4,t5=st.tabs(["📡 SIGNALS","⚠️ WARNINGS","🏗️ SMC ZONES","📋 COT REPORT","🤖 AI ANALYSIS"])
     with t1:
         for s in res["signals"]:
             st.markdown(f"<span class='conf-tag conf-pos'>{s}</span>",unsafe_allow_html=True)
@@ -1139,6 +1362,8 @@ if qp and qp != "—":
                             unsafe_allow_html=True)
     with t4:
         _render_cot_tab(res["cot"], res["symbol"])
+    with t5:
+        render_ai_tab(res)
     st.divider()
 
 # ============================================================
@@ -1301,6 +1526,21 @@ if st.session_state.get("scan_results"):
                         <span style='color:#00ff88'>TP2 {r["tp2_price"]:.5f}</span>
                         <span style='margin-left:8px;color:#ffd700'>RR 1:{r["rr_ratio"]:.1f}</span>
                     </div>""", unsafe_allow_html=True)
+                # AI Analysis button per card
+                if get_api_key():
+                    ai_key = f"ai_{r['symbol']}_{r['score']}_{r['direction']}_{r['price']:.3f}"
+                    if st.button(f"🤖 AI Analyze {r['symbol']}", key=f"scan_ai_{r['symbol']}", use_container_width=True):
+                        with st.spinner(f"🤖 Analyzing {r['symbol']}..."):
+                            prompt = build_ai_prompt(r)
+                            ai_text, err = call_groq_api(prompt, get_api_key())
+                            st.session_state[ai_key] = ai_text if ai_text else f"ERROR:{err}"
+                    if ai_key in st.session_state:
+                        ai_result = st.session_state[ai_key]
+                        if ai_result.startswith("ERROR:"):
+                            st.error(ai_result[6:])
+                        else:
+                            with st.expander("🤖 AI Analysis Result", expanded=True):
+                                st.markdown(ai_result)
                 st.markdown("</div></div><br>",unsafe_allow_html=True)
 
         with tab2:
