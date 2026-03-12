@@ -5,4 +5,4 @@ numpy
 requests
 openpyxl
 xlrd
-plotly
+plotly>=5.0.0
