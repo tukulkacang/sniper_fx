@@ -186,34 +186,74 @@ def get_session_score(active):
     return 20, "💤 Dead Zone — Avoid scalping"
 
 # ============================================================
-# DATA FETCHING
+# DATA FETCHING — Twelve Data (primary) + yfinance (fallback)
 # ============================================================
+
+# Twelve Data interval mapping
+TD_INTERVAL = {
+    "1m":"1min","5m":"5min","15m":"15min","30m":"30min",
+    "1h":"1h","4h":"4h","1d":"1day"
+}
+# Twelve Data outputsize per interval (max candles)
+TD_OUTPUTSIZE = {
+    "1m":390,"5m":200,"15m":200,"30m":150,
+    "1h":150,"4h":120,"1d":150
+}
+# Twelve Data symbol format (forex = "EUR/USD", gold = "XAU/USD")
+def get_td_symbol(symbol):
+    if symbol == "XAUUSD": return "XAU/USD"
+    if len(symbol) == 6:   return symbol[:3] + "/" + symbol[3:]
+    return symbol
 
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_data(symbol, period="5d", interval="5m"):
     import time
-    yf_sym = get_yf_symbol(symbol)
-    periods_to_try = [period]
-    if period == "5d":  periods_to_try = ["5d", "7d", "10d"]
-    if period == "30d": periods_to_try = ["30d", "60d"]
-    if period == "60d": periods_to_try = ["60d", "90d"]
 
+    # ── Try Twelve Data first (free, no rate limit issues) ──
+    td_sym  = get_td_symbol(symbol)
+    td_iv   = TD_INTERVAL.get(interval, "5min")
+    td_size = TD_OUTPUTSIZE.get(interval, 200)
+    try:
+        url = (f"https://api.twelvedata.com/time_series"
+               f"?symbol={td_sym}&interval={td_iv}&outputsize={td_size}"
+               f"&format=JSON&timezone=UTC")
+        resp = requests.get(url, timeout=15)
+        data = resp.json()
+        if data.get("status") == "ok" and data.get("values"):
+            rows = data["values"]
+            df = pd.DataFrame(rows)
+            df = df.rename(columns={"datetime":"Date","open":"Open","high":"High",
+                                     "low":"Low","close":"Close","volume":"Volume"})
+            df["Date"] = pd.to_datetime(df["Date"])
+            df = df.set_index("Date").sort_index()
+            for col in ["Open","High","Low","Close"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            if "Volume" in df.columns:
+                df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
+            else:
+                df["Volume"] = 0
+            df = df[["Open","High","Low","Close","Volume"]].dropna(subset=["Open","High","Low","Close"])
+            if len(df) >= 30:
+                return df
+    except Exception:
+        pass
+
+    # ── Fallback: yfinance ──
+    yf_sym = get_yf_symbol(symbol)
+    periods_to_try = {"5d":["5d","7d"],"30d":["30d","60d"],"60d":["60d","90d"]}.get(period,[period])
     for attempt, p in enumerate(periods_to_try):
         try:
-            if attempt > 0:
-                time.sleep(2)  # Small delay on retry
+            if attempt > 0: time.sleep(2)
             df = yf.download(yf_sym, period=p, interval=interval,
                              auto_adjust=True, progress=False, timeout=20)
             if df is None or df.empty: continue
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = [c[0] for c in df.columns]
             df = df[["Open","High","Low","Close","Volume"]].dropna()
-            if len(df) >= 30:
-                return df
+            if len(df) >= 30: return df
         except Exception as e:
-            err = str(e).lower()
-            if "rate" in err or "too many" in err:
-                time.sleep(3)  # Wait longer on rate limit
+            if "rate" in str(e).lower() or "too many" in str(e).lower():
+                time.sleep(3)
             continue
     return None
 
